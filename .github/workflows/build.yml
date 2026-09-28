@@ -1,0 +1,211 @@
+name: Build Raven
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create filter plist
+        run: |
+          cat > Raven.plist <<'EOF'
+          { Filter = { Bundles = ( "com.AlfaBravo.CombatMaster" ); }; }
+          EOF
+          echo "--- Raven.plist ---"
+          cat Raven.plist
+
+      - name: Patch IL2CPP boxing + file diagnostics
+        run: |
+          python3 - <<'PYEOF'
+          import sys
+
+          TARGET = "write_tree.py"
+          try:
+              src = open(TARGET).read()
+          except FileNotFoundError:
+              print("[error] write_tree.py not found"); sys.exit(1)
+
+          original = src
+          applied = 0
+
+          old_macro = '#define RAVEN_LOG(fmt, ...) os_log(OS_LOG_DEFAULT, "[raven] " fmt, ##__VA_ARGS__)'
+          new_macro = (
+              'static inline void raven_file_log(NSString* msg) {\n'
+              '    static dispatch_once_t once;\n'
+              '    static dispatch_queue_t q;\n'
+              '    dispatch_once(&once, ^{ q = dispatch_queue_create("raven.diag", DISPATCH_QUEUE_SERIAL); });\n'
+              '    dispatch_async(q, ^{\n'
+              '        NSArray* paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);\n'
+              '        NSString* dir = [[paths firstObject] stringByAppendingPathComponent:@"ravenrecon"];\n'
+              '        [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];\n'
+              '        NSString* path = [dir stringByAppendingPathComponent:@"diag.txt"];\n'
+              '        NSString* line = [NSString stringWithFormat:@"[%@] %@\\n", [NSDate date], msg];\n'
+              '        NSFileHandle* fh = [NSFileHandle fileHandleForWritingAtPath:path];\n'
+              '        if (!fh) { [line writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil]; }\n'
+              '        else { [fh seekToEndOfFile]; [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]]; [fh closeFile]; }\n'
+              '    });\n'
+              '}\n'
+              '#define RAVEN_LOG(fmt, ...) do { \\\n'
+              '    os_log(OS_LOG_DEFAULT, "[raven] " fmt, ##__VA_ARGS__); \\\n'
+              '    raven_file_log([NSString stringWithFormat:@fmt, ##__VA_ARGS__]); \\\n'
+              '} while(0)'
+          )
+          if old_macro in src:
+              src = src.replace(old_macro, new_macro)
+              print("[fix] RAVEN_LOG -> file + os_log (with @fmt)"); applied += 1
+          elif "raven_file_log" in src and "stringWithFormat:@fmt" in src:
+              print("[skip] RAVEN_LOG already patched correctly")
+          elif "raven_file_log" in src and "stringWithFormat:fmt" in src:
+              src = src.replace(
+                  '[NSString stringWithFormat:fmt, ##__VA_ARGS__]',
+                  '[NSString stringWithFormat:@fmt, ##__VA_ARGS__]'
+              )
+              print("[fix] stringWithFormat:fmt -> @fmt"); applied += 1
+          else:
+              print("[warn] RAVEN_LOG macro not found in expected form")
+
+          reps = [
+              ("return r ? *(int32_t*)r : 0;",
+               "return r ? *(int32_t*)((uint8_t*)r + 0x10) : 0;"),
+              ("return r ? *(bool*)r : false;",
+               "return r ? *(bool*)((uint8_t*)r + 0x10) : false;"),
+              ("return r ? *(float*)r : 0;",
+               "return r ? *(float*)((uint8_t*)r + 0x10) : 0;"),
+              ("*out = *(Vec3*)r;",
+               "*out = *(Vec3*)((uint8_t*)r + 0x10);"),
+              ("Vec3 sp = *(Vec3*)r;",
+               "Vec3 sp = *(Vec3*)((uint8_t*)r + 0x10);"),
+          ]
+          for old, new in reps:
+              n = src.count(old)
+              if n:
+                  src = src.replace(old, new)
+                  print(f"[fix] {n}x {old}"); applied += n
+              else:
+                  print(f"[skip] already: {old}")
+
+          esp_old = '''    resolveHandles();
+              if (!g_playerRootClass) return;
+
+              void* localPlayer = IL2CPP::readStaticFieldObject(g_playerRootClass, GameData::kFldMyPlayer);
+              if (!localPlayer) return;
+
+              void* list = IL2CPP::readStaticFieldObject(g_playerRootClass, GameData::kFldAllPlayers);
+              if (!list) return;'''
+          esp_new = '''    resolveHandles();
+              RAVEN_LOG("esp: pc=%p local=%p list=%p cam=%p tf=%p",
+                        g_playerRootClass,
+                        IL2CPP::readStaticFieldObject(g_playerRootClass, GameData::kFldMyPlayer),
+                        IL2CPP::readStaticFieldObject(g_playerRootClass, GameData::kFldAllPlayers),
+                        g_getMainCamera, g_playerTransformGetter);
+              if (!g_playerRootClass) { RAVEN_LOG("esp: no class"); return; }
+
+              void* localPlayer = IL2CPP::readStaticFieldObject(g_playerRootClass, GameData::kFldMyPlayer);
+              if (!localPlayer) { RAVEN_LOG("esp: no local"); return; }
+
+              void* list = IL2CPP::readStaticFieldObject(g_playerRootClass, GameData::kFldAllPlayers);
+              if (!list) { RAVEN_LOG("esp: no list"); return; }'''
+          if esp_old in src:
+              src = src.replace(esp_old, esp_new)
+              print("[fix] ESP logging"); applied += 1
+          elif "esp: pc=%p" in src:
+              print("[skip] ESP logging already applied")
+          else:
+              print("[warn] ESP anchor not found")
+
+          aim_old = '''    resolveHandles();
+              if (!g_playerRootClass) return;
+
+              void* localPlayer = IL2CPP::readStaticFieldObject(g_playerRootClass, GameData::kFldMyPlayer);
+              if (!localPlayer) return;
+
+              int localTeam = g_getTeamId ? invokeInt(g_getTeamId, localPlayer) : 0;'''
+          aim_new = '''    resolveHandles();
+              if (!g_playerRootClass) { RAVEN_LOG("aim: no class"); return; }
+              RAVEN_LOG("aim: pc=%p cam=%p team=%p tf=%p",
+                        g_playerRootClass, g_getMainCamera, g_getTeamId, g_getRootTransform);
+
+              void* localPlayer = IL2CPP::readStaticFieldObject(g_playerRootClass, GameData::kFldMyPlayer);
+              if (!localPlayer) { RAVEN_LOG("aim: no local"); return; }
+
+              int localTeam = g_getTeamId ? invokeInt(g_getTeamId, localPlayer) : 0;'''
+          if aim_old in src:
+              src = src.replace(aim_old, aim_new)
+              print("[fix] Aimbot logging"); applied += 1
+          elif "aim: pc=%p" in src:
+              print("[skip] Aimbot logging already applied")
+          else:
+              print("[warn] Aimbot anchor not found")
+
+          if src == original:
+              print("[info] nothing to change")
+          else:
+              open(TARGET, "w").write(src)
+              print(f"[done] {applied} patches written")
+          PYEOF
+
+      - name: Regenerate sources
+        run: python3 write_tree.py
+
+      - name: Cache Theos
+        id: cache-theos
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/theos
+          key: ${{ runner.os }}-theos-v1
+
+      - name: Setup Theos
+        if: steps.cache-theos.outputs.cache-hit != 'true'
+        run: |
+          export THEOS=${{ github.workspace }}/theos
+          git clone --recursive --depth=1 https://github.com/theos/theos.git $THEOS
+          mkdir -p $THEOS/sdks
+          curl -L https://github.com/theos/sdks/archive/master.zip -o /tmp/sdks.zip
+          unzip -q /tmp/sdks.zip -d /tmp/sdks
+          mv /tmp/sdks/sdks-master/*.sdk $THEOS/sdks/
+
+      - name: Install ldid
+        run: brew install ldid
+
+      - name: Build dylib
+        run: |
+          export THEOS=${{ github.workspace }}/theos
+          export PATH=$THEOS/bin:$PATH
+          make clean
+          make
+
+      - name: Locate and verify dylib
+        id: locate
+        run: |
+          DYLIB=$(find .theos -name 'Raven.dylib' -type f | head -n1)
+          if [ -z "$DYLIB" ]; then
+            echo "FAIL: Raven.dylib not found anywhere in .theos"
+            find .theos -type f | head -50
+            exit 1
+          fi
+          echo "found: $DYLIB"
+          echo "dylib_path=$DYLIB" >> $GITHUB_OUTPUT
+          ls -la "$DYLIB"
+          lipo -info "$DYLIB" || true
+          otool -l "$DYLIB" | grep -A1 LC_UUID || true
+          echo "--- checks ---"
+          strings "$DYLIB" | grep -q "diag.txt" && echo "OK: diag.txt present" || { echo "FAIL: diag.txt missing"; exit 1; }
+          strings "$DYLIB" | grep -q "raven.diag" && echo "OK: diag queue label present" || { echo "FAIL: raven.diag missing"; exit 1; }
+          strings "$DYLIB" | grep -q "esp: pc=" && echo "OK: ESP logging present" || { echo "FAIL: ESP logging missing"; exit 1; }
+          strings "$DYLIB" | grep -q "aim: pc=" && echo "OK: Aimbot logging present" || { echo "FAIL: Aimbot logging missing"; exit 1; }
+          echo "--- boxing fixes ---"
+          grep -c "uint8_t\*\)r + 0x10" Src/ESP.mm    | xargs -I{} echo "ESP: {}"
+          grep -c "uint8_t\*\)r + 0x10" Src/Aimbot.mm | xargs -I{} echo "Aim: {}"
+
+      - name: Upload dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: raven-dylib
+          path: ${{ steps.locate.outputs.dylib_path }}
+          if-no-files-found: error

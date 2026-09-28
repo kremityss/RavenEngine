@@ -1,0 +1,32 @@
+{
+  "version": "1.0.0",
+  "min_dylib_version": "1.0.0",
+  "message": "",
+  "offsets": {
+    "Health": "0xb8",
+    "Armor": "0x0",
+    "Position": "0x14",
+    "TeamId": "0x20",
+    "IsVisible": "0x10a",
+    "IsLocal": "0x0",
+    "ListCount": "0x18",
+    "ListItems": "0x10",
+    "ArrayData": "0x20",
+    "ViewMatrix": "0x0",
+    "ProjMatrix": "0x0"
+  },
+  "features": {
+    "aimbot": true,
+    "esp": true,
+    "visuals": true,
+    "misc": true,
+    "players": true,
+    "config": true,
+    "settings": true
+  },
+  "assets": {
+    "ball": "https://i.imgur.com/MQG4stU.png",
+    "header": "https://i.imgur.com/Cnzjdjh.png",
+    "sidebar": "https://i.imgur.com/80o5CRE.png"
+  }
+}
