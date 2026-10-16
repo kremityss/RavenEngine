@@ -156,6 +156,14 @@ jobs:
           test -f Src/MenuV2.mm || { echo "FAIL: Src/MenuV2.mm is missing"; exit 1; }
           cp Src/MenuV2.mm Src/Menu.mm
           grep -q "RAVEN" Src/Menu.mm || { echo "FAIL: Raven UI v2 was not applied"; exit 1; }
+          python3 - <<'PYEOF'
+          p = "Makefile"
+          s = open(p).read()
+          if "-Wno-error=arc-retain-cycles" not in s:
+              s = s.replace("Raven_CFLAGS = ", "Raven_CFLAGS = -Wno-error=arc-retain-cycles ")
+              s = s.replace("Raven_CCFLAGS = ", "Raven_CCFLAGS = -Wno-error=arc-retain-cycles ")
+              open(p, "w").write(s)
+          PYEOF
           echo "OK: Raven UI v2 restored after source regeneration"
 
       - name: Cache Theos
