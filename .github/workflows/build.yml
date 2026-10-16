@@ -212,7 +212,7 @@ jobs:
           strings "$DYLIB" | grep -q "raven.diag" && echo "OK: diag queue label present" || { echo "FAIL: raven.diag missing"; exit 1; }
           strings "$DYLIB" | grep -q "esp: pc=" && echo "OK: ESP logging present" || { echo "FAIL: ESP logging missing"; exit 1; }
           strings "$DYLIB" | grep -q "aim: pc=" && echo "OK: Aimbot logging present" || { echo "FAIL: Aimbot logging missing"; exit 1; }
-          strings "$DYLIB" | grep -q "KREMCHEATS" && echo "OK: Raven UI branding present" || { echo "FAIL: Raven UI v2 branding missing"; exit 1; }
+          strings "$DYLIB" | grep -q "RAVENENGINE" && echo "OK: Raven UI branding present" || { echo "FAIL: Raven UI v2 branding missing"; exit 1; }
           echo "--- boxing fixes ---"
           grep -c "uint8_t\*\)r + 0x10" Src/ESP.mm    | xargs -I{} echo "ESP: {}"
           grep -c "uint8_t\*\)r + 0x10" Src/Aimbot.mm | xargs -I{} echo "Aim: {}"
