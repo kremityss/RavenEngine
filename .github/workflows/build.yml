@@ -2,7 +2,7 @@ name: Build Raven
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, ui/raven-imgui-refresh ]
   workflow_dispatch:
 
 jobs:
@@ -150,8 +150,13 @@ jobs:
               print(f"[done] {applied} patches written")
           PYEOF
 
-      - name: Regenerate sources
-        run: python3 write_tree.py
+      - name: Regenerate sources and preserve UI v2
+        run: |
+          python3 write_tree.py
+          test -f Src/MenuV2.mm || { echo "FAIL: Src/MenuV2.mm is missing"; exit 1; }
+          cp Src/MenuV2.mm Src/Menu.mm
+          grep -q "RAVEN" Src/Menu.mm || { echo "FAIL: Raven UI v2 was not applied"; exit 1; }
+          echo "OK: Raven UI v2 restored after source regeneration"
 
       - name: Cache Theos
         id: cache-theos
@@ -199,6 +204,7 @@ jobs:
           strings "$DYLIB" | grep -q "raven.diag" && echo "OK: diag queue label present" || { echo "FAIL: raven.diag missing"; exit 1; }
           strings "$DYLIB" | grep -q "esp: pc=" && echo "OK: ESP logging present" || { echo "FAIL: ESP logging missing"; exit 1; }
           strings "$DYLIB" | grep -q "aim: pc=" && echo "OK: Aimbot logging present" || { echo "FAIL: Aimbot logging missing"; exit 1; }
+          strings "$DYLIB" | grep -q "KREMCHEATS" && echo "OK: Raven UI branding present" || { echo "FAIL: Raven UI v2 branding missing"; exit 1; }
           echo "--- boxing fixes ---"
           grep -c "uint8_t\*\)r + 0x10" Src/ESP.mm    | xargs -I{} echo "ESP: {}"
           grep -c "uint8_t\*\)r + 0x10" Src/Aimbot.mm | xargs -I{} echo "Aim: {}"
